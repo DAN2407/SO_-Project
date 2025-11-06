@@ -1,270 +1,482 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-import random 
+import random
 
-class WorstFitMemoryManager:
-    def __init__(self):
-        self.memory_size = 50  # Tamaño inicial de memoria
-        self.memory = [0] * self.memory_size  # 0 = libre, >0 = proceso ocupado
-        self.processes = {}  # Diccionario de procesos: {id: tamaño}
-        self.next_process_id = 1
+class MemoryManager:
+    def __init__(self, total_memory=100):
+        self.total_memory = total_memory
+        self.memory = [None] * total_memory
+        self.history = []
         
-    def worst_fit(self, process_size):
-        """Implementa el algoritmo Peor Ajuste (Worst Fit)"""
+    def worst_fit(self, process_name, size):
+        """Algoritmo de Peor Ajuste"""
         best_start = -1
         best_size = -1
         current_start = -1
         current_size = 0
         
-        # Buscar el bloque libre más grande
-        for i in range(self.memory_size):
-            if self.memory[i] == 0:  # Bloque libre
+        for i in range(self.total_memory + 1):
+            if i < self.total_memory and self.memory[i] is None:
                 if current_start == -1:
                     current_start = i
                 current_size += 1
-            else:  # Bloque ocupado
-                if current_size >= process_size and current_size > best_size:
+            else:
+                if current_size >= size and current_size > best_size:
                     best_start = current_start
                     best_size = current_size
                 current_start = -1
                 current_size = 0
         
-        # Verificar el último bloque
-        if current_size >= process_size and current_size > best_size:
-            best_start = current_start
-            best_size = current_size
+        if best_start != -1:
+            self.allocate_memory(best_start, process_name, size)
+            self.history.append(f"Asignado {process_name} (tamaño {size}) en posición {best_start} - Peor Ajuste (bloque tamaño {best_size})")
+            return best_start
         
-        return best_start
+        self.history.append(f"FALLÓ asignar {process_name} (tamaño {size}) - Sin espacio")
+        return -1
     
-    def allocate_process(self, process_size):
-        """Asigna un proceso a la memoria usando Worst Fit"""
-        if process_size <= 0:
-            messagebox.showerror("Error", "El tamaño del proceso debe ser mayor a 0")
+    def check_free_space(self, start, size):
+        if start + size > self.total_memory:
             return False
-            
-        if process_size > self.memory_size:
-            messagebox.showerror("Error", f"El proceso es más grande que la memoria total ({self.memory_size})")
-            return False
-        
-        start_index = self.worst_fit(process_size)
-        
-        if start_index == -1:
-            messagebox.showerror("Error", "No hay espacio suficiente para asignar el proceso")
-            return False
-        
-        # Asignar el proceso
-        process_id = self.next_process_id
-        self.next_process_id += 1
-        
-        for i in range(start_index, start_index + process_size):
-            self.memory[i] = process_id
-        
-        self.processes[process_id] = process_size
-        return True
+        return all(self.memory[i] is None for i in range(start, start + size))
     
-    def deallocate_process(self, process_id):
-        """Libera un proceso de la memoria"""
-        if process_id not in self.processes:
-            return False
-        
-        # Liberar la memoria
-        for i in range(self.memory_size):
-            if self.memory[i] == process_id:
-                self.memory[i] = 0
-        
-        del self.processes[process_id]
-        return True
+    def allocate_memory(self, start, process_name, size):
+        for i in range(start, start + size):
+            self.memory[i] = process_name
     
-    def calculate_fragmentation(self):
-        """Calcula la fragmentación externa"""
-        free_blocks = []
+    def deallocate_memory(self, process_name):
+        for i in range(self.total_memory):
+            if self.memory[i] == process_name:
+                self.memory[i] = None
+        self.history.append(f"Liberado proceso {process_name}")
+    
+    def get_fragmentation(self):
+        free_blocks = 0
+        in_free_block = False
+        
+        for cell in self.memory:
+            if cell is None and not in_free_block:
+                free_blocks += 1
+                in_free_block = True
+            elif cell is not None:
+                in_free_block = False
+        
+        return free_blocks
+    
+    def get_largest_free_block(self):
+        max_block = 0
         current_block = 0
         
-        for i in range(self.memory_size):
-            if self.memory[i] == 0:
+        for cell in self.memory:
+            if cell is None:
                 current_block += 1
+                max_block = max(max_block, current_block)
             else:
-                if current_block > 0:
-                    free_blocks.append(current_block)
-                    current_block = 0
+                current_block = 0
         
-        if current_block > 0:
-            free_blocks.append(current_block)
-        
-        if not free_blocks:
-            return 0, 0, 0
-        
-        total_fragmentation = sum(free_blocks)
-        external_fragmentation = len(free_blocks)
-        largest_block = max(free_blocks)
-        
-        return total_fragmentation, external_fragmentation, largest_block
+        return max_block
 
-class MemorySimulatorGUI:
+class MemorySimulatorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Simulador Worst Fit - Windows Memory Management")
-        self.root.geometry("800x600")
+        self.root.title("Simulador de Algoritmos de Memoria - Windows 98/XP/7")
+        self.root.geometry("950x750")
         
-        self.manager = WorstFitMemoryManager()
+        self.memory_manager = MemoryManager(50)
+        self.process_counter = 0
+        self.current_algorithm = "worst_fit"  # solo Peor Ajuste
+        self.current_demo_info = ""  # texto base de la demo (para usar en pause/reanudar)
         
-        self.setup_gui()
+        self.setup_ui()
         self.update_display()
     
-    def setup_gui(self):
-        # Frame de controles
-        control_frame = ttk.Frame(self.root, padding="10")
-        control_frame.grid(row=0, column=0, sticky="ew")
+    def setup_ui(self):
+        """Configura la interfaz gráfica integrada"""
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Control de tamaño de memoria
-        ttk.Label(control_frame, text="Tamaño de Memoria (10-100):").grid(row=0, column=0, padx=5)
-        self.memory_var = tk.IntVar(value=50)
-        memory_scale = ttk.Scale(control_frame, from_=10, to=100, variable=self.memory_var, 
-                               orient="horizontal", command=self.update_memory_size)
-        memory_scale.grid(row=0, column=1, padx=5)
+        # ===== FILA SUPERIOR: CONTROLES Y DEMOSTRACIONES =====
+        top_frame = ttk.Frame(main_frame)
+        top_frame.pack(fill=tk.X, pady=5)
         
-        self.memory_label = ttk.Label(control_frame, text="50")
-        self.memory_label.grid(row=0, column=2, padx=5)
+        # Columna izquierda: Controles básicos
+        left_controls = ttk.Frame(top_frame)
+        left_controls.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
-        # Control de tamaño de proceso
-        ttk.Label(control_frame, text="Tamaño Proceso:").grid(row=1, column=0, padx=5)
-        self.process_var = tk.IntVar(value=5)
-        process_spin = ttk.Spinbox(control_frame, from_=1, to=20, textvariable=self.process_var, width=10)
-        process_spin.grid(row=1, column=1, padx=5)
+        # Algoritmo
+        ttk.Label(left_controls, text="Algoritmo:").grid(row=0, column=0, sticky=tk.W, padx=5)
+        # Interfaz fija: solo Peor Ajuste (no editable)
+        self.algorithm_var = tk.StringVar(value="Peor Ajuste")
+        algorithm_combo = ttk.Combobox(left_controls, textvariable=self.algorithm_var,
+                                      values=["Peor Ajuste"], width=15, state="readonly")
+        algorithm_combo.grid(row=0, column=1, padx=5)
         
-        # Botones
-        ttk.Button(control_frame, text="Asignar Proceso", 
-                  command=self.allocate_process).grid(row=2, column=0, padx=5, pady=5)
-        ttk.Button(control_frame, text="Liberar Aleatorio", 
-                  command=self.deallocate_random).grid(row=2, column=1, padx=5, pady=5)
-        ttk.Button(control_frame, text="Asignar Aleatorio", 
-                  command=self.allocate_random).grid(row=2, column=2, padx=5, pady=5)
-        ttk.Button(control_frame, text="Limpiar Memoria", 
-                  command=self.clear_memory).grid(row=2, column=3, padx=5, pady=5)
+        # Tamaño de proceso
+        ttk.Label(left_controls, text="Tamaño:").grid(row=0, column=2, sticky=tk.W, padx=5)
+        self.size_var = tk.StringVar(value="5")
+        size_spin = ttk.Spinbox(left_controls, from_=1, to=20, textvariable=self.size_var, width=5)
+        size_spin.grid(row=0, column=3, padx=5)
         
-        # Frame de visualización de memoria
-        memory_frame = ttk.LabelFrame(self.root, text="Visualización de Memoria", padding="10")
-        memory_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        # Botones de control
+        ttk.Button(left_controls, text="Agregar", command=self.add_process).grid(row=0, column=4, padx=2)
+        ttk.Button(left_controls, text="Liberar Aleatorio", command=self.free_random).grid(row=0, column=5, padx=2)
+        ttk.Button(left_controls, text="Limpiar Todo", command=self.clear_all).grid(row=0, column=6, padx=2)
         
-        self.canvas = tk.Canvas(memory_frame, height=100, bg="white")
-        self.canvas.pack(fill="x", expand=True)
+        # Columna derecha: Demostraciones rápidas
+        right_demos = ttk.Frame(top_frame)
+        right_demos.pack(side=tk.RIGHT, fill=tk.X)
         
-        # Frame de información
-        info_frame = ttk.LabelFrame(self.root, text="Estadísticas", padding="10")
-        info_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
+        ttk.Label(right_demos, text="Demostraciones Rápidas:").grid(row=0, column=0, padx=5)
         
-        self.stats_text = tk.Text(info_frame, height=8, width=80)
-        self.stats_text.pack(fill="x", expand=True)
+        # Botones de demostración compactos
+        demos = [
+            ("Pequeños", self.demo_small_processes),
+            ("Grandes", self.demo_large_processes), 
+            ("Mezclados", self.demo_mixed_sizes),
+            ("Fragmentación", self.demo_fragmentation),
+            ("Comparar", self.demo_comparison)
+        ]
         
-        # Configurar expansión
-        self.root.grid_rowconfigure(1, weight=1)
-        self.root.grid_columnconfigure(0, weight=1)
+        for i, (name, command) in enumerate(demos):
+            ttk.Button(right_demos, text=name, command=command, width=10).grid(row=0, column=i+1, padx=2)
+        
+        # ===== ÁREA DE INFORMACIÓN =====
+        info_frame = ttk.Frame(main_frame)
+        info_frame.pack(fill=tk.X, pady=5)
+        
+        self.info_label = ttk.Label(info_frame, text="Estado: Listo - Selecciona una demostración o agrega procesos manualmente", 
+                                   font=('Arial', 10), background='#f0f0f0', relief=tk.SUNKEN, padding=5)
+        self.info_label.pack(fill=tk.X)
+        
+        # ===== VISUALIZACIÓN DE MEMORIA =====
+        memory_frame = ttk.Frame(main_frame)
+        memory_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        # Canvas para memoria
+        self.canvas = tk.Canvas(memory_frame, bg='white', relief=tk.SUNKEN, borderwidth=1)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        
+        # ===== FILA INFERIOR: ESTADÍSTICAS Y CONTROLES =====
+        bottom_frame = ttk.Frame(main_frame)
+        bottom_frame.pack(fill=tk.X, pady=5)
+        
+        # Estadísticas
+        stats_frame = ttk.Frame(bottom_frame)
+        stats_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        self.stats_label = ttk.Label(stats_frame, text="", font=('Arial', 9))
+        self.stats_label.pack(anchor=tk.W)
+        
+        # Botón de pausa para demostraciones
+        self.demo_control_frame = ttk.Frame(bottom_frame)
+        self.demo_control_frame.pack(side=tk.RIGHT)
+        
+        self.pause_button = ttk.Button(self.demo_control_frame, text="Pausar Demo", 
+                                      command=self.toggle_pause, state=tk.DISABLED)
+        self.pause_button.pack(side=tk.RIGHT, padx=5)
+        
+        # ===== ÁREA DE TEXTO: PROCESOS E HISTORIAL =====
+        text_frame = ttk.Frame(main_frame)
+        text_frame.pack(fill=tk.X, pady=5)
+        
+        # Procesos activos (izquierda)
+        processes_frame = ttk.Frame(text_frame)
+        processes_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+        
+        ttk.Label(processes_frame, text="Procesos Activos:", font=('Arial', 9, 'bold')).pack(anchor=tk.W)
+        self.processes_text = tk.Text(processes_frame, height=4, width=40)
+        self.processes_text.pack(fill=tk.X)
+        
+        # Historial (derecha)
+        history_frame = ttk.Frame(text_frame)
+        history_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
+        
+        ttk.Label(history_frame, text="Historial de Operaciones:", font=('Arial', 9, 'bold')).pack(anchor=tk.W)
+        self.history_text = tk.Text(history_frame, height=4, width=40)
+        self.history_text.pack(fill=tk.X)
+        
+        # Variables de control de demostración
+        self.demo_running = False
+        self.demo_paused = False
+        self.current_demo_sequence = []
     
-    def update_memory_size(self, value):
-        """Actualiza el tamaño de memoria cuando se mueve el slider"""
-        new_size = int(float(value))
-        self.memory_label.config(text=str(new_size))
+    # ========== DEMOSTRACIONES INTEGRADAS ==========
+    
+    def demo_small_processes(self):
+        """Demo: Procesos pequeños"""
+        if self.demo_running:
+            return
+            
+        self.clear_all()
+        self.show_demo_info(
+            "DEMO: Procesos Pequeños (1-3 unidades)\n"
+            "• Objetivo: Mostrar asignación de procesos pequeños\n"
+            "• Observa: Fragmentación y eficiencia\n"
+            "• Secuencia: 10 procesos pequeños"
+        )
         
-        # Redimensionar memoria manteniendo los procesos existentes
-        old_memory = self.manager.memory.copy()
-        old_size = self.manager.memory_size
+        sizes = [2, 1, 3, 2, 1, 3, 2, 1, 2, 3]
+        self.start_demo_sequence(sizes, "Procesos pequeños")
+    
+    def demo_large_processes(self):
+        """Demo: Procesos grandes"""
+        if self.demo_running:
+            return
+            
+        self.clear_all()
+        self.show_demo_info(
+            "DEMO: Procesos Grandes (8-12 unidades)\n"
+            "• Objetivo: Comparar asignación de procesos grandes\n"
+            "• Observa: Cómo Peor Ajuste busca bloques grandes\n"
+            "• Secuencia: 5 procesos grandes"
+        )
         
-        self.manager.memory_size = new_size
-        self.manager.memory = [0] * new_size
+        sizes = [10, 8, 12, 9, 11]
+        self.start_demo_sequence(sizes, "Procesos grandes")
+    
+    def demo_mixed_sizes(self):
+        """Demo: Mezcla de tamaños"""
+        if self.demo_running:
+            return
+            
+        self.clear_all()
+        self.show_demo_info(
+            "DEMO: Mezcla de Tamaños\n"
+            "• Objetivo: Comportamiento en escenario real\n"
+            "• Observa: Estrategias con variedad de tamaños\n"
+            "• Secuencia: Procesos pequeños, medianos y grandes"
+        )
         
-        # Copiar procesos existentes si caben
-        process_positions = {}
-        # Colocar primero los procesos más grandes para mejorar la recompacción
-        sorted_processes = sorted(self.manager.processes.items(), key=lambda it: it[1], reverse=True)
-        for process_id, size in sorted_processes:
-            start_index = self.manager.worst_fit(size)
-            if start_index != -1 and start_index + size <= new_size:
-                for i in range(start_index, start_index + size):
-                    self.manager.memory[i] = process_id
-                process_positions[process_id] = start_index
+        sizes = [8, 2, 6, 1, 10, 3, 4, 7, 2, 5]
+        self.start_demo_sequence(sizes, "Mezcla de tamaños")
+    
+    def demo_fragmentation(self):
+        """Demo: Fragmentación"""
+        if self.demo_running:
+            return
+            
+        self.clear_all()
+        self.show_demo_info(
+            "DEMO: Generación de Fragmentación\n"
+            "• Fase 1: Llenar con procesos pequeños\n"
+            "• Fase 2: Liberar estratégicamente\n"
+            "• Observa: Cómo se genera y maneja la fragmentación"
+        )
         
-        # Actualizar procesos (eliminar los que no caben)
-        self.manager.processes = {pid: size for pid, size in self.manager.processes.items() 
-                                if pid in process_positions}
+        # Fase 1: Llenar con pequeños
+        sizes = [3, 3, 3, 3, 3, 3, 3, 3]
+        self.start_demo_sequence(sizes, "Fragmentación - Fase 1")
+        
+        # Programar fase 2 (usar mismo intervalo que execute_next_demo_step: 800ms)
+        self.root.after(len(sizes) * 800 + 1000, self.demo_fragmentation_phase2)
+    
+    def demo_fragmentation_phase2(self):
+        """Segunda fase de demo de fragmentación"""
+        if not self.demo_running:
+            return
+            
+        processes_to_free = ["P2", "P4", "P6"]
+        for process in processes_to_free:
+            self.memory_manager.deallocate_memory(process)
         
         self.update_display()
+        self.show_demo_info(
+            "DEMO: Fragmentación - Fase 2\n"
+            "• Liberados procesos P2, P4, P6\n"
+            "• Ahora hay fragmentación\n"
+            "• Prueba asignar un proceso de tamaño 5-6 unidades\n"
+            "• Observa cómo cada algoritmo maneja la situación"
+        )
+        
+        # Finalizar demo
+        self.root.after(3000, self.end_demo)
     
-    def allocate_process(self):
-        """Asigna un proceso con el tamaño especificado"""
-        process_size = self.process_var.get()
-        if self.manager.allocate_process(process_size):
-            self.update_display()
+    def demo_comparison(self):
+        """Demo: Comparación"""
+        self.clear_all()
+        self.show_demo_info(
+            "DEMO: Comparación de Algoritmos\n"
+            "• Instrucciones:\n"
+            "  1. Ejecuta con Siguiente Ajuste\n"  
+            "  2. Cambia a Peor Ajuste\n"
+            "  3. Compara resultados\n"
+            "• Secuencia recomendada: 5, 3, 7, 2, 6, 4"
+        )
+        self.size_var.set("5")
     
-    def allocate_random(self):
-        """Asigna un proceso con tamaño aleatorio"""
-        process_size = random.randint(1, min(15, self.manager.memory_size // 3))
-        self.process_var.set(process_size)
-        if self.manager.allocate_process(process_size):
-            self.update_display()
+    def show_demo_info(self, text):
+        """Muestra información de la demo en el área de información"""
+        self.current_demo_info = text
+        self.info_label.config(text=text)
     
-    def deallocate_random(self):
-        """Libera un proceso aleatorio"""
-        if self.manager.processes:
-            process_id = random.choice(list(self.manager.processes.keys()))
-            self.manager.deallocate_process(process_id)
+    def start_demo_sequence(self, sizes, demo_name):
+        """Inicia una secuencia de demostración"""
+        self.demo_running = True
+        self.demo_paused = False
+        self.current_demo_sequence = sizes
+        self.pause_button.config(state=tk.NORMAL, text="Pausar Demo")
+        
+        self.memory_manager.history.append(f"=== INICIO DEMO: {demo_name} ===")
+        self.execute_next_demo_step(0)
+    
+    def execute_next_demo_step(self, index):
+        """Ejecuta el siguiente paso de la demo"""
+        if not self.demo_running or index >= len(self.current_demo_sequence):
+            self.end_demo()
+            return
+        
+        if self.demo_paused:
+            # Reintentar después de 500ms si está pausado
+            self.root.after(500, lambda: self.execute_next_demo_step(index))
+            return
+        
+        size = self.current_demo_sequence[index]
+        self.process_counter += 1
+        process_name = f"P{self.process_counter}"
+        
+        # Usar siempre Peor Ajuste
+        self.memory_manager.worst_fit(process_name, size)
+        
+        self.update_display()
+        
+        # Programar siguiente paso
+        self.root.after(800, lambda: self.execute_next_demo_step(index + 1))
+    
+    def toggle_pause(self):
+        """Pausa/reanuda la demo"""
+        if self.demo_running:
+            self.demo_paused = not self.demo_paused
+            self.pause_button.config(text="Reanudar Demo" if self.demo_paused else "Pausar Demo")
+            status = "PAUSADA" if self.demo_paused else "EJECUTANDO"
+            # Usar el texto base de la demo para evitar acumulación de prefijos
+            base = self.current_demo_info if getattr(self, "current_demo_info", "") else self.info_label.cget("text")
+            self.info_label.config(text=f"Demo {status} - {base}")
+    
+    def end_demo(self):
+        """Finaliza la demo"""
+        self.demo_running = False
+        self.demo_paused = False
+        self.pause_button.config(state=tk.DISABLED, text="Pausar Demo")
+        self.show_demo_info("Demo finalizada. Puedes probar con otro algoritmo o nueva demostración.")
+    
+    # ========== FUNCIONES BASE ==========
+    
+    def on_algorithm_change(self, event):
+        self.current_algorithm = "next_fit" if self.algorithm_var.get() == "Siguiente Ajuste" else "worst_fit"
+        self.update_display()
+    
+    def add_process(self):
+        if self.demo_running:
+            messagebox.showinfo("Demo en curso", "Termina la demostración actual antes de agregar procesos manualmente.")
+            return
+            
+        try:
+            size = int(self.size_var.get())
+            if size <= 0:
+                messagebox.showerror("Error", "El tamaño debe ser mayor a 0")
+                return
+            
+            self.process_counter += 1
+            process_name = f"P{self.process_counter}"
+            
+            # Asignación con Peor Ajuste
+            result = self.memory_manager.worst_fit(process_name, size)
+            
+            if result == -1:
+                messagebox.showwarning("Sin memoria", "No hay espacio suficiente")
+                self.process_counter -= 1
+            else:
+                self.update_display()
+                
+        except ValueError:
+            messagebox.showerror("Error", "Tamaño inválido")
+    
+    def free_random(self):
+        if self.demo_running:
+            messagebox.showinfo("Demo en curso", "Termina la demostración actual antes de liberar procesos.")
+            return
+            
+        active_processes = []
+        for cell in self.memory_manager.memory:
+            if cell is not None and cell not in active_processes:
+                active_processes.append(cell)
+        
+        if active_processes:
+            process_to_free = random.choice(active_processes)
+            self.memory_manager.deallocate_memory(process_to_free)
             self.update_display()
         else:
-            messagebox.showinfo("Info", "No hay procesos para liberar")
+            messagebox.showinfo("Info", "No hay procesos activos")
     
-    def clear_memory(self):
-        """Limpia toda la memoria"""
-        self.manager.memory = [0] * self.manager.memory_size
-        self.manager.processes = {}
-        self.manager.next_process_id = 1
+    def clear_all(self):
+        if self.demo_running:
+            self.end_demo()
+            
+        self.memory_manager = MemoryManager(50)
+        self.process_counter = 0
         self.update_display()
+        self.show_demo_info("Sistema reiniciado. Selecciona una demostración o agrega procesos manualmente.")
     
     def update_display(self):
-        """Actualiza la visualización de memoria y estadísticas"""
         self.canvas.delete("all")
         
-        # Dibujar memoria
-        cell_width = min(20, 780 / self.manager.memory_size)
-        x = 10
+        colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', 
+                 '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9']
         
-        for i in range(self.manager.memory_size):
-            color = "lightgreen" if self.manager.memory[i] == 0 else "lightcoral"
-            self.canvas.create_rectangle(x, 10, x + cell_width - 2, 40, 
-                                       fill=color, outline="black")
+        cell_width = max(10, self.canvas.winfo_width() / len(self.memory_manager.memory))
+        cell_height = 30
+        
+        for i, process in enumerate(self.memory_manager.memory):
+            x1 = i * cell_width
+            y1 = 10
+            x2 = (i + 1) * cell_width
+            y2 = y1 + cell_height
             
-            if self.manager.memory[i] != 0:
-                self.canvas.create_text(x + cell_width/2, 25, 
-                                      text=str(self.manager.memory[i]), font=("Arial", 8))
+            if process is None:
+                color = 'white'
+                text = ""
+            else:
+                process_num = int(process[1:]) if process[1:].isdigit() else 0
+                color = colors[process_num % len(colors)]
+                text = process
             
-            x += cell_width
+            self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline='black')
+            if text and cell_width > 15:
+                self.canvas.create_text((x1 + x2) / 2, (y1 + y2) / 2, text=text, font=('Arial', 8))
         
         # Actualizar estadísticas
-        total_frag, ext_frag, largest_block = self.manager.calculate_fragmentation()
-        memory_used = sum(self.manager.processes.values())
-        memory_free = self.manager.memory_size - memory_used
+        algorithm_name = "Peor Ajuste"
+        fragmentation = self.memory_manager.get_fragmentation()
+        largest_block = self.memory_manager.get_largest_free_block()
+        used_memory = sum(1 for cell in self.memory_manager.memory if cell is not None)
+        free_memory = len(self.memory_manager.memory) - used_memory
+        usage_percentage = (used_memory / len(self.memory_manager.memory)) * 100
         
-        stats = f"""
-ESTADÍSTICAS DEL ALGORITMO PEOR AJUSTE (WORST FIT):
+        total_mem = len(self.memory_manager.memory)
+        stats_text = f"{algorithm_name} | Usado: {used_memory}/{total_mem} ({usage_percentage:.1f}%) | "
+        stats_text += f"Fragmentación: {fragmentation} bloques | Mayor bloque libre: {largest_block}"
+        self.stats_label.config(text=stats_text)
         
-Tamaño total de memoria: {self.manager.memory_size} unidades
-Memoria utilizada: {memory_used} unidades ({memory_used/self.manager.memory_size*100:.1f}%)
-Memoria libre: {memory_free} unidades ({memory_free/self.manager.memory_size*100:.1f}%)
-Procesos activos: {len(self.manager.processes)}
-Fragmentación total: {total_frag} unidades
-Fragmentación externa: {ext_frag} bloques libres
-Bloque libre más grande: {largest_block} unidades
-
-CARACTERÍSTICAS DE WORST FIT:
-• Busca el bloque libre MÁS GRANDE disponible
-• Reduce la fragmentación externa en algunos casos
-• Puede dejar bloques grandes sin utiliza
-"""
+        # Actualizar procesos activos
+        self.processes_text.delete(1.0, tk.END)
+        active_processes = {}
+        for cell in self.memory_manager.memory:
+            if cell is not None:
+                if cell not in active_processes:
+                    active_processes[cell] = 0
+                active_processes[cell] += 1
         
-        self.stats_text.delete(1.0, tk.END)
-        self.stats_text.insert(1.0, stats)
+        for process, size in active_processes.items():
+            self.processes_text.insert(tk.END, f"{process}: {size} unidades\n")
+        
+        # Actualizar historial
+        self.history_text.delete(1.0, tk.END)
+        for entry in self.memory_manager.history[-8:]:
+            self.history_text.insert(tk.END, f"{entry}\n")
 
 def main():
     root = tk.Tk()
-    app = MemorySimulatorGUI(root)
+    app = MemorySimulatorApp(root)
     root.mainloop()
 
 if __name__ == "__main__":
