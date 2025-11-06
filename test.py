@@ -80,13 +80,21 @@ class MemorySimulatorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Simulador de Algoritmos de Memoria - Windows 98/XP/7")
-        self.root.geometry("950x750")
+        # No forzar geometría fija: permitir que la ventana se adapte a la resolución.
+        # Establecer un mínimo razonable y permitir redimensionado.
+        self.root.minsize(800, 600)
+        # Escuchar cambios de tamaño para redibujar de forma responsiva
+        self.root.bind("<Configure>", self.on_resize)
         
-        self.memory_manager = MemoryManager(50)
+        # Variable para tamaño de memoria (editable por el usuario)
+        self.mem_size_var = tk.StringVar(value="50")
+        self.process_counter = 0
+        # Crear MemoryManager con el tamaño inicial
+        self.memory_manager = MemoryManager(int(self.mem_size_var.get()))
         self.process_counter = 0
         self.current_algorithm = "worst_fit"  # solo Peor Ajuste
         self.current_demo_info = ""  # texto base de la demo (para usar en pause/reanudar)
-        
+         
         self.setup_ui()
         self.update_display()
     
@@ -134,7 +142,6 @@ class MemorySimulatorApp:
             ("Grandes", self.demo_large_processes), 
             ("Mezclados", self.demo_mixed_sizes),
             ("Fragmentación", self.demo_fragmentation),
-            ("Comparar", self.demo_comparison)
         ]
         
         for i, (name, command) in enumerate(demos):
@@ -153,8 +160,17 @@ class MemorySimulatorApp:
         memory_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         
         # Canvas para memoria
-        self.canvas = tk.Canvas(memory_frame, bg='white', relief=tk.SUNKEN, borderwidth=1)
-        self.canvas.pack(fill=tk.BOTH, expand=True)
+        # Usar un frame intermedio para colocar canvas + scrollbar horizontal
+        canvas_wrap = ttk.Frame(memory_frame)
+        canvas_wrap.pack(fill=tk.BOTH, expand=True)
+
+        self.canvas = tk.Canvas(canvas_wrap, bg='white', relief=tk.SUNKEN, borderwidth=1, highlightthickness=0)
+        self.h_scroll = ttk.Scrollbar(canvas_wrap, orient=tk.HORIZONTAL, command=self.canvas.xview)
+        self.canvas.configure(xscrollcommand=self.h_scroll.set)
+        self.canvas.pack(fill=tk.BOTH, expand=True, side=tk.TOP)
+        self.h_scroll.pack(fill=tk.X, side=tk.BOTTOM)
+        # Redibujar cuando el canvas cambie de tamaño
+        self.canvas.bind("<Configure>", lambda e: self.update_display())
         
         # ===== FILA INFERIOR: ESTADÍSTICAS Y CONTROLES =====
         bottom_frame = ttk.Frame(main_frame)
@@ -291,19 +307,6 @@ class MemorySimulatorApp:
         # Finalizar demo
         self.root.after(3000, self.end_demo)
     
-    def demo_comparison(self):
-        """Demo: Comparación"""
-        self.clear_all()
-        self.show_demo_info(
-            "DEMO: Comparación de Algoritmos\n"
-            "• Instrucciones:\n"
-            "  1. Ejecuta con Siguiente Ajuste\n"  
-            "  2. Cambia a Peor Ajuste\n"
-            "  3. Compara resultados\n"
-            "• Secuencia recomendada: 5, 3, 7, 2, 6, 4"
-        )
-        self.size_var.set("5")
-    
     def show_demo_info(self, text):
         """Muestra información de la demo en el área de información"""
         self.current_demo_info = text
@@ -412,10 +415,31 @@ class MemorySimulatorApp:
         if self.demo_running:
             self.end_demo()
             
-        self.memory_manager = MemoryManager(50)
+        # Reiniciar con el tamaño seleccionado actualmente
+        try:
+            size = int(self.mem_size_var.get())
+        except Exception:
+            size = 50
+        self.memory_manager = MemoryManager(size)
         self.process_counter = 0
         self.update_display()
         self.show_demo_info("Sistema reiniciado. Selecciona una demostración o agrega procesos manualmente.")
+    
+    def set_memory_size(self):
+        """Aplica un nuevo tamaño de memoria (reinicia el estado actual)"""
+        if self.demo_running:
+            messagebox.showinfo("Demo en curso", "Termina la demostración actual antes de cambiar el tamaño de memoria.")
+            return
+        try:
+            size = int(self.mem_size_var.get())
+            if size <= 0:
+                raise ValueError
+            self.memory_manager = MemoryManager(size)
+            self.process_counter = 0
+            self.update_display()
+            self.show_demo_info(f"Tamaño de memoria actualizado a {size} celdas.")
+        except ValueError:
+            messagebox.showerror("Error", "Tamaño de memoria inválido")
     
     def update_display(self):
         self.canvas.delete("all")
@@ -423,8 +447,17 @@ class MemorySimulatorApp:
         colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', 
                  '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9']
         
-        cell_width = max(10, self.canvas.winfo_width() / len(self.memory_manager.memory))
-        cell_height = 30
+        # Responsive: mínimo ancho por celda, pero si hay espacio suficiente
+        min_cell_width = 12
+        total_cells = len(self.memory_manager.memory) if self.memory_manager.total_memory > 0 else 1
+        visible_width = max(1, self.canvas.winfo_width())
+        # Calcular ancho de celda en función del ancho visible; si la memoria total requiere más
+        # espacio, permitimos scroll horizontal calculando total_width y ajustando scrollregion.
+        cell_width = max(min_cell_width, visible_width / total_cells)
+        cell_height = max(20, int(self.canvas.winfo_height() * 0.08))
+        total_width = int(cell_width * total_cells)
+        # Ajustar scrollregion para permitir desplazamiento si es necesario
+        self.canvas.config(scrollregion=(0, 0, total_width, cell_height + 20))
         
         for i, process in enumerate(self.memory_manager.memory):
             x1 = i * cell_width
@@ -473,6 +506,13 @@ class MemorySimulatorApp:
         self.history_text.delete(1.0, tk.END)
         for entry in self.memory_manager.history[-8:]:
             self.history_text.insert(tk.END, f"{entry}\n")
+
+    def on_resize(self, event):
+        """Handler de redimensionado: redibuja la visualización y ajusta fuentes si se desea."""
+        # Filtrar múltiples eventos rápidos
+        if event.widget == self.root:
+            # Forzar actualización visual (update_display ya está ligada al canvas/<Configure>)
+            self.update_display()
 
 def main():
     root = tk.Tk()
